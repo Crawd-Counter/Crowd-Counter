@@ -18,14 +18,14 @@ data class Detection(
 )
 
 /**
- * Counts dark objects on light background
- * Uses morphological closing to fill internal gaps (like chickpea creases)
- * Then watershed to separate touching objects
+ * Counts objects by detecting dominant background color and treating everything else as objects
+ * Uses HSV color space with adaptive background detection
  */
 class ObjectDetector {
     
     companion object {
         private const val MIN_AREA = 500
+        private const val COLOR_TOLERANCE = 25 // How different from background to be considered object
         
         init {
             OpenCVLoader.initLocal()
@@ -41,23 +41,29 @@ class ObjectDetector {
         val mat = Mat()
         Utils.bitmapToMat(bitmap, mat)
         
-        // Grayscale + stronger blur to smooth internal details
-        val gray = Mat()
-        Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY)
-        Imgproc.GaussianBlur(gray, gray, Size(7.0, 7.0), 0.0)
+        // Convert to HSV color space
+        val hsv = Mat()
+        Imgproc.cvtColor(mat, hsv, Imgproc.COLOR_RGB2HSV)
         
-        // Otsu threshold - dark objects become white
+        // Blur to reduce noise before analysis
+        Imgproc.GaussianBlur(hsv, hsv, Size(7.0, 7.0), 0.0)
+        
+        // Find dominant (background) color using histogram
+        val bgColor = findDominantColor(hsv)
+        
+        // Create mask: pixels that are NOT similar to background = objects
         val binary = Mat()
-        Imgproc.threshold(gray, binary, 0.0, 255.0, 
-            Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
+        createNonBackgroundMask(hsv, bgColor, binary)
         
-        // STRONG morphological closing FIRST to fill internal gaps (chickpea crease)
-        val bigCloseKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(15.0, 15.0))
-        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, bigCloseKernel, Point(-1.0, -1.0), 2)
+        hsv.release()
         
-        // Then opening to remove noise and thin connections between objects
-        val openKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
-        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, openKernel, Point(-1.0, -1.0), 2)
+        // Moderate closing to fill internal gaps but not merge touching objects
+        val bigCloseKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(9.0, 9.0))
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, bigCloseKernel, Point(-1.0, -1.0), 1)
+        
+        // Opening to remove noise - helps separate lightly touching objects
+        val openKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, openKernel, Point(-1.0, -1.0), 1)
         
         // Distance transform
         val dist = Mat()
@@ -67,22 +73,22 @@ class ObjectDetector {
         Core.normalize(dist, dist, 0.0, 255.0, Core.NORM_MINMAX)
         dist.convertTo(dist, CvType.CV_8U)
         
-        // Find local maxima with LARGER kernel to avoid multiple peaks per object
+        // Find local maxima - SMALLER kernel to detect peaks in touching objects
         val dilated = Mat()
-        val localMaxKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(25.0, 25.0))
+        val localMaxKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(15.0, 15.0))
         Imgproc.dilate(dist, dilated, localMaxKernel)
         
         // Peaks are where dist == dilated
         val peaks = Mat()
         Core.compare(dist, dilated, peaks, Core.CMP_EQ)
         
-        // Require higher minimum distance value
+        // LOWER threshold to catch more peaks (touching objects have lower distance values)
         val distThresh = Mat()
-        Imgproc.threshold(dist, distThresh, 50.0, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(dist, distThresh, 20.0, 255.0, Imgproc.THRESH_BINARY)
         Core.bitwise_and(peaks, distThresh, peaks)
         
-        // Dilate peaks slightly to merge very close ones
-        val peakDilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
+        // Smaller dilation to avoid merging nearby peaks
+        val peakDilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
         Imgproc.dilate(peaks, peaks, peakDilateKernel)
         
         // Label the peaks as markers
@@ -135,7 +141,6 @@ class ObjectDetector {
         }
         
         // Cleanup
-        gray.release()
         binary.release()
         bigCloseKernel.release()
         openKernel.release()
@@ -155,58 +160,144 @@ class ObjectDetector {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         
-        // Filter and merge overlapping detections
-        val detections = labelBounds.values
+        // Filter by min area and convert to detections
+        val allDetections = labelBounds.values
             .filter { it.width * it.height >= MIN_AREA }
             .map { Detection("object", 1f, it.x / w, it.y / h, it.width / w, it.height / h) }
         
-        return mergeOverlapping(detections)
-    }
-    
-    // Merge detections that overlap significantly
-    private fun mergeOverlapping(detections: List<Detection>): List<Detection> {
-        if (detections.size <= 1) return detections
+        if (allDetections.isEmpty()) return emptyList()
         
-        val merged = mutableListOf<Detection>()
-        val used = BooleanArray(detections.size)
+        // Find most common (mode) box area using histogram binning
+        val areas = allDetections.map { (it.width * w * it.height * h).toInt() }
+        val modeArea = findModeArea(areas)
         
-        for (i in detections.indices) {
-            if (used[i]) continue
-            
-            var current = detections[i]
-            used[i] = true
-            
-            // Find all overlapping detections and merge
-            for (j in i + 1 until detections.size) {
-                if (used[j]) continue
-                if (iou(current, detections[j]) > 0.3f) {
-                    current = merge(current, detections[j])
-                    used[j] = true
+        val minAllowed = modeArea * 0.7  // 30% smaller
+        val maxAllowed = modeArea * 1.3  // 30% bigger
+        
+        val finalDetections = mutableListOf<Detection>()
+        
+        for (det in allDetections) {
+            val area = (det.width * w * det.height * h).toDouble()
+            when {
+                area in minAllowed..maxAllowed -> {
+                    // Normal size - keep as is
+                    finalDetections.add(det)
                 }
+                area > maxAllowed -> {
+                    // Oversized - estimate count based on area ratio
+                    val estimatedCount = (area / modeArea).toInt().coerceAtLeast(2)
+                    repeat(estimatedCount) {
+                        finalDetections.add(det)
+                    }
+                }
+                // Too small - discard (likely noise)
             }
-            merged.add(current)
         }
-        return merged
+        
+        return finalDetections
     }
     
-    private fun merge(a: Detection, b: Detection): Detection {
-        val x = minOf(a.x, b.x)
-        val y = minOf(a.y, b.y)
-        val right = maxOf(a.x + a.width, b.x + b.width)
-        val bottom = maxOf(a.y + a.height, b.y + b.height)
-        return Detection("object", 1f, x, y, right - x, bottom - y)
+    // Find dominant color (background) using histogram analysis
+    private fun findDominantColor(hsv: Mat): DoubleArray {
+        // Sample pixels to build color histogram (for performance)
+        val hBins = IntArray(18)  // 18 bins for hue (0-180)
+        val sBins = IntArray(8)   // 8 bins for saturation
+        val vBins = IntArray(8)   // 8 bins for value
+        
+        val step = 4 // Sample every 4th pixel
+        for (y in 0 until hsv.rows() step step) {
+            for (x in 0 until hsv.cols() step step) {
+                val pixel = hsv.get(y, x)
+                val h = pixel[0].toInt()
+                val s = pixel[1].toInt()
+                val v = pixel[2].toInt()
+                
+                hBins[(h / 10).coerceIn(0, 17)]++
+                sBins[(s / 32).coerceIn(0, 7)]++
+                vBins[(v / 32).coerceIn(0, 7)]++
+            }
+        }
+        
+        // Find most common bin for each channel
+        val dominantH = hBins.indices.maxByOrNull { hBins[it] }!! * 10 + 5
+        val dominantS = sBins.indices.maxByOrNull { sBins[it] }!! * 32 + 16
+        val dominantV = vBins.indices.maxByOrNull { vBins[it] }!! * 32 + 16
+        
+        return doubleArrayOf(dominantH.toDouble(), dominantS.toDouble(), dominantV.toDouble())
     }
     
-    private fun iou(a: Detection, b: Detection): Float {
-        val x1 = maxOf(a.x, b.x)
-        val y1 = maxOf(a.y, b.y)
-        val x2 = minOf(a.x + a.width, b.x + b.width)
-        val y2 = minOf(a.y + a.height, b.y + b.height)
-        val inter = maxOf(0f, x2 - x1) * maxOf(0f, y2 - y1)
-        val union = a.width * a.height + b.width * b.height - inter
-        return if (union > 0) inter / union else 0f
+    // Create binary mask where pixels different from background are white
+    private fun createNonBackgroundMask(hsv: Mat, bgColor: DoubleArray, output: Mat) {
+        val bgH = bgColor[0]
+        val bgS = bgColor[1]
+        val bgV = bgColor[2]
+        
+        // Define range around background color
+        // For low saturation backgrounds (white/gray), use saturation-based detection
+        // For colored backgrounds, use hue-based detection
+        val isNeutralBg = bgS < 50
+        
+        if (isNeutralBg) {
+            // Neutral background - objects are anything with saturation
+            val lowerBound = Scalar(0.0, 40.0, 30.0)
+            val upperBound = Scalar(180.0, 255.0, 255.0)
+            Core.inRange(hsv, lowerBound, upperBound, output)
+        } else {
+            // Colored background - exclude that hue range
+            val hTolerance = 15.0
+            val sTolerance = 50.0
+            val vTolerance = 50.0
+            
+            // Create mask of background color
+            val bgMask = Mat()
+            val lowerBg = Scalar(
+                (bgH - hTolerance).coerceAtLeast(0.0),
+                (bgS - sTolerance).coerceAtLeast(0.0),
+                (bgV - vTolerance).coerceAtLeast(0.0)
+            )
+            val upperBg = Scalar(
+                (bgH + hTolerance).coerceAtMost(180.0),
+                (bgS + sTolerance).coerceAtMost(255.0),
+                (bgV + vTolerance).coerceAtMost(255.0)
+            )
+            Core.inRange(hsv, lowerBg, upperBg, bgMask)
+            
+            // Invert - objects are NOT background
+            Core.bitwise_not(bgMask, output)
+            bgMask.release()
+        }
     }
-
+    
+    // Find the most common area using histogram binning
+    private fun findModeArea(areas: List<Int>): Double {
+        if (areas.isEmpty()) return MIN_AREA.toDouble()
+        if (areas.size == 1) return areas[0].toDouble()
+        
+        // Create bins (10% width each)
+        val sorted = areas.sorted()
+        val minArea = sorted.first()
+        val maxArea = sorted.last()
+        val range = maxArea - minArea
+        
+        if (range == 0) return minArea.toDouble()
+        
+        // Use 10 bins
+        val binCount = 10
+        val binWidth = range / binCount + 1
+        val bins = IntArray(binCount)
+        
+        for (area in areas) {
+            val binIndex = ((area - minArea) / binWidth).coerceIn(0, binCount - 1)
+            bins[binIndex]++
+        }
+        
+        // Find bin with most items
+        val modeBinIndex = bins.indices.maxByOrNull { bins[it] } ?: 0
+        
+        // Return center of that bin
+        return minArea + (modeBinIndex + 0.5) * binWidth
+    }
+    
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {
         val yBuffer = imageProxy.planes[0].buffer
         val uBuffer = imageProxy.planes[1].buffer

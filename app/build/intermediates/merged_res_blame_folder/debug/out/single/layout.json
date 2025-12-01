@@ -2,9 +2,5 @@
     {
         "merged": "com.objectcounter.app-mergeDebugResources-40:/layout/activity_main.xml",
         "source": "com.objectcounter.app-main-43:/layout/activity_main.xml"
-    },
-    {
-        "merged": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-mergeDebugResources-40:\\layout\\activity_main.xml",
-        "source": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-main-43:\\layout\\activity_main.xml"
     }
 ]
