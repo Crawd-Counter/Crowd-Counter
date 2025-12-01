@@ -89,10 +89,20 @@
         app:layout_constraintBottom_toBottomOf="parent">
 
         <Button
+            android:id="@+id/btnPhoto"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1"
+            android:backgroundTint="#2196F3"
+            android:text="Photo"
+            android:textColor="#FFFFFF" />
+
+        <Button
             android:id="@+id/btnDetect"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
+            android:layout_marginHorizontal="4dp"
             android:layout_weight="1"
             android:backgroundTint="@color/green"
             android:enabled="false"
@@ -103,7 +113,7 @@
             android:id="@+id/btnReset"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="4dp"
             android:layout_weight="1"
             android:backgroundTint="#333333"
             android:text="Reset"

@@ -19,12 +19,13 @@ data class Detection(
 
 /**
  * Counts dark objects on light background
- * Uses distance transform + watershed to separate touching objects
+ * Uses morphological closing to fill internal gaps (like chickpea creases)
+ * Then watershed to separate touching objects
  */
 class ObjectDetector {
     
     companion object {
-        private const val MIN_AREA = 200
+        private const val MIN_AREA = 500
         
         init {
             OpenCVLoader.initLocal()
@@ -33,26 +34,30 @@ class ObjectDetector {
 
     fun detect(imageProxy: ImageProxy): List<Detection> {
         val bitmap = imageProxyToBitmap(imageProxy)
+        return detectBitmap(bitmap)
+    }
+    
+    fun detectBitmap(bitmap: Bitmap): List<Detection> {
         val mat = Mat()
         Utils.bitmapToMat(bitmap, mat)
         
-        // Grayscale + blur
+        // Grayscale + stronger blur to smooth internal details
         val gray = Mat()
         Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY)
-        Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
+        Imgproc.GaussianBlur(gray, gray, Size(7.0, 7.0), 0.0)
         
         // Otsu threshold - dark objects become white
         val binary = Mat()
         Imgproc.threshold(gray, binary, 0.0, 255.0, 
             Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
         
-        // Strong morphological opening to separate touching objects
-        val openKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
-        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, openKernel, Point(-1.0, -1.0), 3)
+        // STRONG morphological closing FIRST to fill internal gaps (chickpea crease)
+        val bigCloseKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(15.0, 15.0))
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, bigCloseKernel, Point(-1.0, -1.0), 2)
         
-        // Close small holes
-        val closeKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
-        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, closeKernel, Point(-1.0, -1.0), 2)
+        // Then opening to remove noise and thin connections between objects
+        val openKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, openKernel, Point(-1.0, -1.0), 2)
         
         // Distance transform
         val dist = Mat()
@@ -62,28 +67,33 @@ class ObjectDetector {
         Core.normalize(dist, dist, 0.0, 255.0, Core.NORM_MINMAX)
         dist.convertTo(dist, CvType.CV_8U)
         
-        // Find local maxima (object centers) using dilation comparison
+        // Find local maxima with LARGER kernel to avoid multiple peaks per object
         val dilated = Mat()
-        val localMaxKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(15.0, 15.0))
+        val localMaxKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(25.0, 25.0))
         Imgproc.dilate(dist, dilated, localMaxKernel)
         
-        // Peaks are where dist == dilated and dist > threshold
+        // Peaks are where dist == dilated
         val peaks = Mat()
         Core.compare(dist, dilated, peaks, Core.CMP_EQ)
         
-        // Also require minimum distance value (not background)
+        // Require higher minimum distance value
         val distThresh = Mat()
-        Imgproc.threshold(dist, distThresh, 30.0, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(dist, distThresh, 50.0, 255.0, Imgproc.THRESH_BINARY)
         Core.bitwise_and(peaks, distThresh, peaks)
+        
+        // Dilate peaks slightly to merge very close ones
+        val peakDilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
+        Imgproc.dilate(peaks, peaks, peakDilateKernel)
         
         // Label the peaks as markers
         val markers = Mat()
         Imgproc.connectedComponents(peaks, markers)
-        Core.add(markers, Scalar(1.0), markers) // Background = 1
+        Core.add(markers, Scalar(1.0), markers)
         
         // Sure background
         val sureBg = Mat()
-        Imgproc.dilate(binary, sureBg, closeKernel, Point(-1.0, -1.0), 3)
+        val bgKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        Imgproc.dilate(binary, sureBg, bgKernel, Point(-1.0, -1.0), 3)
         
         // Unknown = sureBg - peaks
         val unknown = Mat()
@@ -127,15 +137,17 @@ class ObjectDetector {
         // Cleanup
         gray.release()
         binary.release()
+        bigCloseKernel.release()
         openKernel.release()
-        closeKernel.release()
         dist.release()
         dilated.release()
         localMaxKernel.release()
         peaks.release()
         distThresh.release()
+        peakDilateKernel.release()
         markers.release()
         sureBg.release()
+        bgKernel.release()
         unknown.release()
         bgr.release()
         mat.release()
@@ -143,9 +155,56 @@ class ObjectDetector {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         
-        return labelBounds.values
+        // Filter and merge overlapping detections
+        val detections = labelBounds.values
             .filter { it.width * it.height >= MIN_AREA }
             .map { Detection("object", 1f, it.x / w, it.y / h, it.width / w, it.height / h) }
+        
+        return mergeOverlapping(detections)
+    }
+    
+    // Merge detections that overlap significantly
+    private fun mergeOverlapping(detections: List<Detection>): List<Detection> {
+        if (detections.size <= 1) return detections
+        
+        val merged = mutableListOf<Detection>()
+        val used = BooleanArray(detections.size)
+        
+        for (i in detections.indices) {
+            if (used[i]) continue
+            
+            var current = detections[i]
+            used[i] = true
+            
+            // Find all overlapping detections and merge
+            for (j in i + 1 until detections.size) {
+                if (used[j]) continue
+                if (iou(current, detections[j]) > 0.3f) {
+                    current = merge(current, detections[j])
+                    used[j] = true
+                }
+            }
+            merged.add(current)
+        }
+        return merged
+    }
+    
+    private fun merge(a: Detection, b: Detection): Detection {
+        val x = minOf(a.x, b.x)
+        val y = minOf(a.y, b.y)
+        val right = maxOf(a.x + a.width, b.x + b.width)
+        val bottom = maxOf(a.y + a.height, b.y + b.height)
+        return Detection("object", 1f, x, y, right - x, bottom - y)
+    }
+    
+    private fun iou(a: Detection, b: Detection): Float {
+        val x1 = maxOf(a.x, b.x)
+        val y1 = maxOf(a.y, b.y)
+        val x2 = minOf(a.x + a.width, b.x + b.width)
+        val y2 = minOf(a.y + a.height, b.y + b.height)
+        val inter = maxOf(0f, x2 - x1) * maxOf(0f, y2 - y1)
+        val union = a.width * a.height + b.width * b.height - inter
+        return if (union > 0) inter / union else 0f
     }
 
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {

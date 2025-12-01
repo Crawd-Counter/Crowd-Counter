@@ -3185,6 +3185,7 @@ id bounceBoth
 id bounceEnd
 id bounceStart
 id btnDetect
+id btnPhoto
 id btnReset
 id buttonPanel
 id cache_measures

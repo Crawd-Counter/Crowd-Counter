@@ -28,6 +28,9 @@ public final class ActivityMainBinding implements ViewBinding {
   public final Button btnDetect;
 
   @NonNull
+  public final Button btnPhoto;
+
+  @NonNull
   public final Button btnReset;
 
   @NonNull
@@ -55,13 +58,14 @@ public final class ActivityMainBinding implements ViewBinding {
   public final TextView tvStatus;
 
   private ActivityMainBinding(@NonNull ConstraintLayout rootView, @NonNull Button btnDetect,
-      @NonNull Button btnReset, @NonNull FrameLayout cameraContainer,
+      @NonNull Button btnPhoto, @NonNull Button btnReset, @NonNull FrameLayout cameraContainer,
       @NonNull LinearLayout controls, @NonNull LinearLayout header,
       @NonNull OverlayView overlayView, @NonNull PreviewView previewView,
       @NonNull LinearLayout resultsContainer, @NonNull TextView tvCounts,
       @NonNull TextView tvStatus) {
     this.rootView = rootView;
     this.btnDetect = btnDetect;
+    this.btnPhoto = btnPhoto;
     this.btnReset = btnReset;
     this.cameraContainer = cameraContainer;
     this.controls = controls;
@@ -103,6 +107,12 @@ public final class ActivityMainBinding implements ViewBinding {
       id = R.id.btnDetect;
       Button btnDetect = ViewBindings.findChildViewById(rootView, id);
       if (btnDetect == null) {
+        break missingId;
+      }
+
+      id = R.id.btnPhoto;
+      Button btnPhoto = ViewBindings.findChildViewById(rootView, id);
+      if (btnPhoto == null) {
         break missingId;
       }
 
@@ -160,7 +170,7 @@ public final class ActivityMainBinding implements ViewBinding {
         break missingId;
       }
 
-      return new ActivityMainBinding((ConstraintLayout) rootView, btnDetect, btnReset,
+      return new ActivityMainBinding((ConstraintLayout) rootView, btnDetect, btnPhoto, btnReset,
           cameraContainer, controls, header, overlayView, previewView, resultsContainer, tvCounts,
           tvStatus);
     }
