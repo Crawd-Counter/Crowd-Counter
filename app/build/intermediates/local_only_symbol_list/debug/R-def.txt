@@ -1,0 +1,22 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color dark_gray
+color gray
+color green
+color red
+color white
+id btnDetect
+id btnReset
+id cameraContainer
+id controls
+id header
+id overlayView
+id previewView
+id resultsContainer
+id tvCounts
+id tvStatus
+layout activity_main
+mipmap ic_launcher
+mipmap ic_launcher_round
+style Theme.ObjectCounter

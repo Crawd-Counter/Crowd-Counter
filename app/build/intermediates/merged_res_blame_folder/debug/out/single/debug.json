@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-merged_res-41:\\layout_activity_main.xml.flat",
+        "source": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-main-43:\\layout\\activity_main.xml"
+    },
+    {
+        "merged": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-merged_res-41:\\mipmap-hdpi_ic_launcher_round.xml.flat",
+        "source": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-main-43:\\mipmap-hdpi\\ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.objectcounter.app-merged_res-41:/layout_activity_main.xml.flat",
+        "source": "com.objectcounter.app-main-43:/layout/activity_main.xml"
+    },
+    {
+        "merged": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-merged_res-41:\\mipmap-hdpi_ic_launcher.xml.flat",
+        "source": "C:\\Users\\MY-PC\\.gradle\\daemon\\8.13\\com.objectcounter.app-main-43:\\mipmap-hdpi\\ic_launcher.xml"
+    }
+]
